@@ -1,0 +1,395 @@
+import 'package:flutter/material.dart';
+import 'package:flutter_tts/flutter_tts.dart';
+import 'package:vibration/vibration.dart';
+import 'package:fl_chart/fl_chart.dart';
+import 'package:qr_flutter/qr_flutter.dart';
+
+void main() {
+  runApp(const WaitingApp());
+}
+
+class WaitingApp extends StatelessWidget {
+  const WaitingApp({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return MaterialApp(
+      title: 'AI Smart Waiting',
+      debugShowCheckedModeBanner: false,
+      theme: ThemeData.dark().copyWith(
+        scaffoldBackgroundColor: const Color(0xFF0F172A),
+        primaryColor: const Color(0xFFF59E0B),
+        cardColor: const Color(0xFF1E293B),
+      ),
+      home: const WaitingHomeScreen(),
+    );
+  }
+}
+
+class WaitingHomeScreen extends StatefulWidget {
+  const WaitingHomeScreen({super.key});
+
+  @override
+  State<WaitingHomeScreen> createState() => _WaitingHomeScreenState();
+}
+
+class _WaitingHomeScreenState extends State<WaitingHomeScreen> {
+  // TTS 및 진동 엔진
+  final FlutterTts _tts = FlutterTts();
+  bool _isTtsEnabled = true;
+
+  // 대기 상태 데이터
+  int _totalWaiting = 5;
+  int _partySize = 2;
+  int? _myTicketNumber;
+  int _aheadCount = 0;
+  bool _isCalled = false;
+
+  final TextEditingController _phoneController = TextEditingController();
+
+  // 시간대별 대기 통계 데이터 (차트용)
+  List<double> _hourlyData = [12, 19, 8, 4, 5];
+
+  @override
+  void initState() {
+    super.initState();
+    _initTts();
+  }
+
+  void _initTts() async {
+    await _tts.setLanguage("ko-KR");
+    await _tts.setSpeechRate(0.5);
+    _speak("웨이팅 스마트 시스템이 시작되었습니다.");
+  }
+
+  void _speak(String text) async {
+    if (_isTtsEnabled) {
+      await _tts.stop();
+      await _tts.speak(text);
+    }
+  }
+
+  void _triggerVibration(List<int> pattern) async {
+    bool? hasVibrator = await Vibration.hasVibrator();
+    if (hasVibrator == true) {
+      Vibration.vibrate(pattern: pattern);
+    }
+  }
+
+  // AI 기반 예상 대기시간 계산
+  int _calculateEstTime(int ahead) {
+    if (ahead <= 0) return 0;
+    double baseTime = ahead * 5.0; // 팀당 평균 5분
+    double partyFactor = _partySize > 2 ? 1.2 : 1.0;
+    return (baseTime * partyFactor).round();
+  }
+
+  // 번호표 발급
+  void _issueTicket() {
+    if (_phoneController.text.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('휴대폰 번호를 입력해 주세요.')),
+      );
+      return;
+    }
+
+    setState(() {
+      _myTicketNumber = 100 + _totalWaiting + 1;
+      _aheadCount = _totalWaiting;
+      _isCalled = false;
+    });
+
+    int estMinutes = _calculateEstTime(_aheadCount);
+    String message = "접수가 완료되었습니다. 대기번호는 $_myTicketNumber번 이며, 내 앞 대기 팀은 $_aheadCount팀, 예상 소요 시간은 약 $estMinutes분 입니다.";
+
+    _speak(message);
+    _triggerVibration([0, 100, 50, 100]);
+  }
+
+  // 입장 호출 시뮬레이션
+  void _simulateCall() {
+    if (_myTicketNumber == null) return;
+
+    setState(() {
+      _aheadCount = 0;
+      _isCalled = true;
+    });
+
+    _speak("고객님, 대기번호 $_myTicketNumber번 고객님. 지금 매장 앞으로 입장해 주시기 바랍니다.");
+    _triggerVibration([0, 500, 200, 500, 200, 1000]);
+  }
+
+  // 1팀 입장 시뮬레이션
+  void _simulateNextTurn() {
+    if (_totalWaiting > 0) {
+      setState(() {
+        _totalWaiting--;
+        _hourlyData[4] = _totalWaiting.toDouble();
+      });
+    }
+
+    if (_myTicketNumber != null && _aheadCount > 0) {
+      setState(() {
+        _aheadCount--;
+      });
+
+      if (_aheadCount == 0) {
+        _simulateCall();
+      } else {
+        _speak("내 앞 대기팀이 $_aheadCount팀 남아있습니다.");
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        backgroundColor: const Color(0xFF1E293B),
+        title: const Row(
+          children: [
+            Icon(Icons.restaurant, color: Color(0xFFF59E0B)),
+            SizedBox(width: 8),
+            Text('스마트 웨이팅', style: TextStyle(fontWeight: FontWeight.bold)),
+          ],
+        ),
+        actions: [
+          IconButton(
+            icon: Icon(
+              _isTtsEnabled ? Icons.volume_up : Icons.volume_off,
+              color: _isTtsEnabled ? Colors.emeraldAccent : Colors.grey,
+            ),
+            onPressed: () {
+              setState(() {
+                _isTtsEnabled = !_isTtsEnabled;
+              });
+              _speak(_isTtsEnabled ? "음성 안내가 켜졌습니다." : "");
+            },
+          ),
+        ],
+      ),
+      body: SingleChildScrollView(
+        padding: const EdgeInsets.all(16.0),
+        child: Column(
+          children: [
+            // 1. 대기 접수 폼 또는 내 티켓 카드
+            _myTicketNumber == null ? _buildRegistrationCard() : _buildMyTicketCard(),
+
+            const SizedBox(height: 20),
+
+            // 2. 실시간 대기 현황 차트
+            _buildChartCard(),
+
+            const SizedBox(height: 20),
+
+            // 3. 테스트 컨트롤러
+            _buildDemoControls(),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // 발권 양식 카드
+  Widget _buildRegistrationCard() {
+    return Card(
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      child: Padding(
+        padding: const EdgeInsets.all(20.0),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Row(
+              children: [
+                Icon(Icons.confirmation_number, color: Color(0xFFF59E0B)),
+                SizedBox(width: 8),
+                Text('웨이팅 접수하기', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+              ],
+            ),
+            const SizedBox(height: 16),
+            TextField(
+              controller: _phoneController,
+              keyboardType: TextInputType.phone,
+              decoration: InputDecoration(
+                labelText: '휴대폰 번호 (간편 인증)',
+                hintText: '010-0000-0000',
+                filled: true,
+                fillColor: const Color(0xFF0F172A),
+                border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+              ),
+            ),
+            const SizedBox(height: 16),
+            const Text('방문 인원수', style: TextStyle(color: Colors.grey)),
+            const SizedBox(height: 8),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+              children: [1, 2, 3, 4].map((size) {
+                bool isSelected = _partySize == size;
+                return ChoiceChip(
+                  label: Text('$size명'),
+                  selected: isSelected,
+                  selectedColor: const Color(0xFFF59E0B),
+                  onSelected: (selected) {
+                    if (selected) setState(() => _partySize = size);
+                  },
+                );
+              }).toList(),
+            ),
+            const SizedBox(height: 20),
+            SizedBox(
+              width: double.infinity,
+              height: 50,
+              child: ElevatedButton(
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFFF59E0B),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                ),
+                onPressed: _issueTicket,
+                child: const Text('번호표 발급받기', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.black)),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // 발권 후 내 티켓 현황 카드
+  Widget _buildMyTicketCard() {
+    return AnimatedContainer(
+      duration: const Duration(milliseconds: 500),
+      decoration: BoxDecoration(
+        color: const Color(0xFF1E293B),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(
+          color: _isCalled ? Colors.redAccent : const Color(0xFFF59E0B),
+          width: _isCalled ? 3 : 1,
+        ),
+      ),
+      padding: const EdgeInsets.all(20),
+      child: Column(
+        children: [
+          Align(
+            alignment: Alignment.topRight,
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+              decoration: BoxDecoration(
+                color: _isCalled ? Colors.redAccent : const Color(0xFFF59E0B),
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: Text(
+                _isCalled ? '입장 가능' : '대기 중',
+                style: TextStyle(color: _isCalled ? Colors.white : Colors.black, fontWeight: FontWeight.bold, fontSize: 12),
+              ),
+            ),
+          ),
+          const Text('나의 대기 번호', style: TextStyle(color: Colors.grey)),
+          Text(
+            '#$_myTicketNumber',
+            style: TextStyle(
+              fontSize: 48,
+              fontWeight: FontWeight.black,
+              color: _isCalled ? Colors.redAccent : const Color(0xFFF59E0B),
+            ),
+          ),
+          const SizedBox(height: 16),
+          Container(
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: const Color(0xFF0F172A),
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.spaceAround,
+              children: [
+                Column(
+                  children: [
+                    const Text('내 앞 대기', style: TextStyle(fontSize: 12, color: Colors.grey)),
+                    Text('$_aheadCount 팀', style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+                  ],
+                ),
+                Container(height: 30, width: 1, color: Colors.grey),
+                Column(
+                  children: [
+                    const Text('AI 예상 대기시간', style: TextStyle(fontSize: 12, color: Colors.grey)),
+                    Text(
+                      '약 ${_calculateEstTime(_aheadCount)}분',
+                      style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.emeraldAccent),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 16),
+          QrImageView(
+            data: 'WAITING_TICKET:$_myTicketNumber',
+            version: QrVersions.auto,
+            size: 130.0,
+            backgroundColor: Colors.white,
+          ),
+        ],
+      ),
+    );
+  }
+
+  // 실시간 차트 카드
+  Widget _buildChartCard() {
+    return Card(
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      child: Padding(
+        padding: const EdgeInsets.all(16.0),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text('실시간 대기 현황 트렌드', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+            const SizedBox(height: 16),
+            SizedBox(
+              height: 180,
+              child: LineChart(
+                LineChartData(
+                  gridData: const FlGridData(show: false),
+                  titlesData: const FlTitlesData(
+                    rightTitles: AxisTitles(sideTitles: SideTitles(showTitles: false)),
+                    topTitles: AxisTitles(sideTitles: SideTitles(showTitles: false)),
+                  ),
+                  borderData: FlBorderData(show: false),
+                  lineBarsData: [
+                    LineChartBarData(
+                      spots: _hourlyData.asMap().entries.map((e) => FlSpot(e.key.toDouble(), e.value)).toList(),
+                      isCurved: true,
+                      color: const Color(0xFFF59E0B),
+                      barWidth: 4,
+                      belowBarData: BarAreaData(show: true, color: const Color(0xFFF59E0B).withOpacity(0.2)),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // 데모 컨트롤러
+  Widget _buildDemoControls() {
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+      children: [
+        ElevatedButton.icon(
+          onPressed: _simulateNextTurn,
+          icon: const Icon(Icons.skip_next),
+          label: const Text('1팀 입장'),
+          style: ElevatedButton.styleFrom(backgroundColor: Colors.indigo),
+        ),
+        ElevatedButton.icon(
+          onPressed: _simulateCall,
+          icon: const Icon(Icons.notifications_active),
+          label: const Text('내 순서 호출'),
+          style: ElevatedButton.styleFrom(backgroundColor: Colors.rose),
+        ),
+      ],
+    );
+  }
+}
